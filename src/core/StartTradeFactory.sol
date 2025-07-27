@@ -2,6 +2,7 @@
 pragma solidity ^0.8.30;
 
 import {IStartTradeFactory} from "../interfaces/IStartTradeFactory.sol";
+import {IStartTradePair} from "../interfaces/IStartTradePair.sol";
 import {StartTradePair} from "./StartTradePair.sol";
 
 contract StartTradeFactory is IStartTradeFactory {

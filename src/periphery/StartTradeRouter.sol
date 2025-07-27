@@ -3,9 +3,8 @@ pragma solidity ^0.8.30;
 
 import {IStartTradeRouter} from "../interfaces/IStartTradeRouter.sol";
 import {IStartTradeFactory} from "../interfaces/IStartTradeFactory.sol";
-import {IStartTradePair} from "../interfaces/IStartTradePair.sol";
-import {IWAVAX} from "../interfaces/IWAVAX.sol";
 import {StartTradeLibrary} from "../libraries/StartTradeLibrary.sol";
+import {IWAVAX} from "../interfaces/IWAVAX.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -13,8 +12,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 contract StartTradeRouter is IStartTradeRouter, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    address public immutable factory;
-    address public immutable WAVAX;
+    address public immutable override factory;
+    address public immutable override WAVAX;
 
     modifier ensure(uint256 deadline) {
         require(deadline >= block.timestamp, "StartTradeRouter: EXPIRED");
@@ -84,7 +83,7 @@ contract StartTradeRouter is IStartTradeRouter, ReentrancyGuard {
         uint256 amountAVAXMin,
         address to,
         uint256 deadline
-    ) external payable virtual override ensure(deadline) returns (uint256 amountToken, uint256 amountAVAX, uint256 liquidity) {
+    ) external virtual override payable ensure(deadline) returns (uint256 amountToken, uint256 amountAVAX, uint256 liquidity) {
         (amountToken, amountAVAX) = _addLiquidity(
             token,
             WAVAX,
@@ -190,9 +189,9 @@ contract StartTradeRouter is IStartTradeRouter, ReentrancyGuard {
 
     function swapExactAVAXForTokens(uint256 amountOutMin, address[] calldata path, address to, uint256 deadline)
         external
-        payable
         virtual
         override
+        payable
         ensure(deadline)
         returns (uint256[] memory amounts)
     {
@@ -204,13 +203,13 @@ contract StartTradeRouter is IStartTradeRouter, ReentrancyGuard {
         _swap(amounts, path, to);
     }
 
-    function swapTokensForExactAVAX(
-        uint256 amountOut,
-        uint256 amountInMax,
-        address[] calldata path,
-        address to,
-        uint256 deadline
-    ) external virtual override ensure(deadline) returns (uint256[] memory amounts) {
+    function swapTokensForExactAVAX(uint256 amountOut, uint256 amountInMax, address[] calldata path, address to, uint256 deadline)
+        external
+        virtual
+        override
+        ensure(deadline)
+        returns (uint256[] memory amounts)
+    {
         require(path[path.length - 1] == WAVAX, "StartTradeRouter: INVALID_PATH");
         amounts = StartTradeLibrary.getAmountsIn(factory, amountOut, path);
         require(amounts[0] <= amountInMax, "StartTradeRouter: EXCESSIVE_INPUT_AMOUNT");
@@ -222,13 +221,13 @@ contract StartTradeRouter is IStartTradeRouter, ReentrancyGuard {
         _safeTransferAVAX(to, amounts[amounts.length - 1]);
     }
 
-    function swapExactTokensForAVAX(
-        uint256 amountIn,
-        uint256 amountOutMin,
-        address[] calldata path,
-        address to,
-        uint256 deadline
-    ) external virtual override ensure(deadline) returns (uint256[] memory amounts) {
+    function swapExactTokensForAVAX(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline)
+        external
+        virtual
+        override
+        ensure(deadline)
+        returns (uint256[] memory amounts)
+    {
         require(path[path.length - 1] == WAVAX, "StartTradeRouter: INVALID_PATH");
         amounts = StartTradeLibrary.getAmountsOut(factory, amountIn, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "StartTradeRouter: INSUFFICIENT_OUTPUT_AMOUNT");
@@ -242,9 +241,9 @@ contract StartTradeRouter is IStartTradeRouter, ReentrancyGuard {
 
     function swapAVAXForExactTokens(uint256 amountOut, address[] calldata path, address to, uint256 deadline)
         external
-        payable
         virtual
         override
+        payable
         ensure(deadline)
         returns (uint256[] memory amounts)
     {
@@ -259,52 +258,30 @@ contract StartTradeRouter is IStartTradeRouter, ReentrancyGuard {
     }
 
     // **** LIBRARY FUNCTIONS ****
-    function quote(uint256 amountA, uint256 reserveA, uint256 reserveB)
-        public
-        pure
-        virtual
-        override
-        returns (uint256 amountB)
-    {
+    function quote(uint256 amountA, uint256 reserveA, uint256 reserveB) public pure virtual override returns (uint256 amountB) {
         return StartTradeLibrary.quote(amountA, reserveA, reserveB);
     }
 
     function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut)
-        public
-        pure
-        virtual
-        override
-        returns (uint256 amountOut)
+        public pure virtual override returns (uint256 amountOut)
     {
         return StartTradeLibrary.getAmountOut(amountIn, reserveIn, reserveOut);
     }
 
     function getAmountIn(uint256 amountOut, uint256 reserveIn, uint256 reserveOut)
-        public
-        pure
-        virtual
-        override
-        returns (uint256 amountIn)
+        public pure virtual override returns (uint256 amountIn)
     {
         return StartTradeLibrary.getAmountIn(amountOut, reserveIn, reserveOut);
     }
 
     function getAmountsOut(uint256 amountIn, address[] calldata path)
-        public
-        view
-        virtual
-        override
-        returns (uint256[] memory amounts)
+        public view virtual override returns (uint256[] memory amounts)
     {
         return StartTradeLibrary.getAmountsOut(factory, amountIn, path);
     }
 
     function getAmountsIn(uint256 amountOut, address[] calldata path)
-        public
-        view
-        virtual
-        override
-        returns (uint256[] memory amounts)
+        public view virtual override returns (uint256[] memory amounts)
     {
         return StartTradeLibrary.getAmountsIn(factory, amountOut, path);
     }

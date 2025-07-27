@@ -20,54 +20,49 @@ error TransferFailed();
 contract StartTradeTokenFactory is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
-    struct TokenInfo {
-        address tokenAddress;
-        address creator;
-        uint256 totalSupply;
-        uint256 currentSupply;
-        uint256 targetMarketCap;
-        uint256 currentPrice;
-        bool isListed;
-        uint256 createdAt;
-        uint256 avaxRaised;
-    }
-
-    struct BondingCurveParams {
-        uint256 initialPrice;      // Starting price in wei per token
-        uint256 finalPrice;        // Final price in wei per token
-        uint256 targetSupply;      // Supply at which to list on DEX
-        uint256 k;                 // Bonding curve steepness parameter
-    }
-
     // Constants
-    uint256 public constant LISTING_THRESHOLD = 24 ether; // 24 AVAX to list on DEX
-    uint256 public constant PLATFORM_FEE_BPS = 100; // 1% platform fee
-    uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10**18; // 1B tokens max
-    
+    uint256 public constant BONDING_CURVE_CAP = 24 ether; // 24 AVAX
+    uint256 public constant INITIAL_VIRTUAL_AVAX = 1 ether; // 1 AVAX
+    uint256 public constant INITIAL_VIRTUAL_TOKEN = 1_000_000 * 10**18; // 1M tokens
+    uint256 public constant PLATFORM_FEE_PERCENT = 100; // 1%
+    uint256 public constant CREATOR_FEE_PERCENT = 100; // 1%
+    uint256 public constant FEE_DENOMINATOR = 10000; // 100%
+
     // State variables
-    address public immutable dexFactory;
-    address public immutable dexRouter;
+    IStartTradeRouter public immutable router;
+    IStartTradeFactory public immutable factory;
     address public immutable WAVAX;
+    
     address public feeRecipient;
     uint256 public tokenCreationFee = 0.01 ether;
-    
-    // Mappings
-    mapping(address => TokenInfo) public tokens;
-    mapping(address => BondingCurveParams) public bondingCurves;
+
+    // Token tracking
+    mapping(address => TokenInfo) public tokenInfo;
+    mapping(address => bool) public isLaunched;
     address[] public allTokens;
-    
+
+    struct TokenInfo {
+        address creator;
+        uint256 virtualAvax;
+        uint256 virtualTokens;
+        uint256 realAvax;
+        uint256 realTokens;
+        bool isLaunched;
+        uint256 createdAt;
+    }
+
     // Events
     event TokenCreated(
-        address indexed tokenAddress,
+        address indexed token,
         address indexed creator,
         string name,
         string symbol,
-        uint256 totalSupply,
-        uint256 targetMarketCap
+        string description,
+        string imageUrl
     );
     
     event TokenPurchased(
-        address indexed tokenAddress,
+        address indexed token,
         address indexed buyer,
         uint256 avaxAmount,
         uint256 tokenAmount,
@@ -75,295 +70,237 @@ contract StartTradeTokenFactory is ReentrancyGuard, Ownable {
     );
     
     event TokenSold(
-        address indexed tokenAddress,
+        address indexed token,
         address indexed seller,
         uint256 tokenAmount,
         uint256 avaxAmount,
         uint256 newPrice
     );
     
-    event TokenListed(
-        address indexed tokenAddress,
-        address indexed pairAddress,
-        uint256 liquidityAdded
+    event TokenLaunched(
+        address indexed token,
+        address indexed pair,
+        uint256 avaxAmount,
+        uint256 tokenAmount
     );
 
+    // Custom errors
+    error InsufficientPayment();
+    error TokenNotFound();
+    error TokenAlreadyLaunched();
+    error InsufficientTokenBalance();
+    error InsufficientAvaxReserves();
+    error SlippageExceeded();
+    error TransferFailed();
+
     constructor(
-        address _dexFactory,
-        address _dexRouter,
+        address _router,
+        address _factory,
         address _WAVAX,
-        address _feeRecipient,
-        address _owner
-    ) Ownable(_owner) {
-        dexFactory = _dexFactory;
-        dexRouter = _dexRouter;
+        address _feeRecipient
+    ) Ownable(msg.sender) {
+        router = IStartTradeRouter(_router);
+        factory = IStartTradeFactory(_factory);
         WAVAX = _WAVAX;
         feeRecipient = _feeRecipient;
     }
 
-    /**
-     * @dev Creates a new token with bonding curve mechanics
-     */
     function createToken(
         string memory name,
         string memory symbol,
         string memory description,
-        string memory imageUrl,
-        string memory website,
-        string memory telegram,
-        string memory twitter,
-        uint256 targetMarketCap
-    ) external payable nonReentrant returns (address tokenAddress) {
+        string memory imageUrl
+    ) external payable nonReentrant returns (address token) {
         if (msg.value < tokenCreationFee) revert InsufficientPayment();
-        if (bytes(name).length == 0 || bytes(symbol).length == 0) revert InvalidParameters();
-        if (targetMarketCap == 0) revert InvalidParameters();
 
-        // Deploy new token
-        StartTradeToken token = new StartTradeToken(
+        // Create new token
+        token = address(new StartTradeToken(
             name,
             symbol,
-            18, // Standard 18 decimals
-            MAX_SUPPLY,
-            address(this), // Factory owns initially
+            INITIAL_VIRTUAL_TOKEN,
+            address(this),
             description,
-            imageUrl,
-            website,
-            telegram,
-            twitter
-        );
-        
-        tokenAddress = address(token);
-        
-        // Calculate bonding curve parameters
-        BondingCurveParams memory params = BondingCurveParams({
-            initialPrice: 1e12, // 0.000001 AVAX per token
-            finalPrice: (targetMarketCap * 1e18) / MAX_SUPPLY,
-            targetSupply: (MAX_SUPPLY * 80) / 100, // 80% of supply for bonding curve
-            k: 1e18 // Linear curve initially
-        });
-        
-        bondingCurves[tokenAddress] = params;
-        
-        // Store token info
-        tokens[tokenAddress] = TokenInfo({
-            tokenAddress: tokenAddress,
+            imageUrl
+        ));
+
+        // Initialize token info
+        tokenInfo[token] = TokenInfo({
             creator: msg.sender,
-            totalSupply: MAX_SUPPLY,
-            currentSupply: 0,
-            targetMarketCap: targetMarketCap,
-            currentPrice: params.initialPrice,
-            isListed: false,
-            createdAt: block.timestamp,
-            avaxRaised: 0
+            virtualAvax: INITIAL_VIRTUAL_AVAX,
+            virtualTokens: INITIAL_VIRTUAL_TOKEN,
+            realAvax: 0,
+            realTokens: 0,
+            isLaunched: false,
+            createdAt: block.timestamp
         });
-        
-        allTokens.push(tokenAddress);
-        
-        // Transfer creation fee to fee recipient
-        if (msg.value > 0) {
-            (bool success,) = feeRecipient.call{value: msg.value}("");
+
+        allTokens.push(token);
+
+        // Send creation fee to fee recipient
+        if (tokenCreationFee > 0) {
+            (bool success,) = feeRecipient.call{value: tokenCreationFee}("");
             if (!success) revert TransferFailed();
         }
-        
-        emit TokenCreated(tokenAddress, msg.sender, name, symbol, MAX_SUPPLY, targetMarketCap);
+
+        // Refund excess payment
+        if (msg.value > tokenCreationFee) {
+            (bool success,) = msg.sender.call{value: msg.value - tokenCreationFee}("");
+            if (!success) revert TransferFailed();
+        }
+
+        emit TokenCreated(token, msg.sender, name, symbol, description, imageUrl);
     }
 
-    /**
-     * @dev Buy tokens using bonding curve pricing
-     */
-    function buyTokens(address tokenAddress) external payable nonReentrant {
-        TokenInfo storage tokenInfo = tokens[tokenAddress];
-        if (tokenInfo.tokenAddress == address(0)) revert TokenNotFound();
-        if (tokenInfo.isListed) revert AlreadyListed();
-        if (msg.value == 0) revert InsufficientPayment();
+    function buyTokens(address token, uint256 minTokensOut) external payable nonReentrant {
+        TokenInfo storage info = tokenInfo[token];
+        if (info.creator == address(0)) revert TokenNotFound();
+        if (info.isLaunched) revert TokenAlreadyLaunched();
 
-        BondingCurveParams memory params = bondingCurves[tokenAddress];
-        
-        // Calculate tokens to mint based on bonding curve
-        uint256 tokensToMint = calculateTokensForAVAX(tokenAddress, msg.value);
-        
-        // Check if this purchase would exceed target supply
-        if (tokenInfo.currentSupply + tokensToMint > params.targetSupply) {
-            tokensToMint = params.targetSupply - tokenInfo.currentSupply;
-        }
-        
-        // Calculate actual AVAX needed
-        uint256 avaxNeeded = calculateAVAXForTokens(tokenAddress, tokensToMint);
-        
-        // Update token info
-        tokenInfo.currentSupply += tokensToMint;
-        tokenInfo.avaxRaised += avaxNeeded;
-        tokenInfo.currentPrice = getCurrentPrice(tokenAddress);
-        
+        uint256 avaxAmount = msg.value;
+        uint256 platformFee = (avaxAmount * PLATFORM_FEE_PERCENT) / FEE_DENOMINATOR;
+        uint256 creatorFee = (avaxAmount * CREATOR_FEE_PERCENT) / FEE_DENOMINATOR;
+        uint256 netAvaxAmount = avaxAmount - platformFee - creatorFee;
+
+        // Calculate tokens to mint using bonding curve
+        uint256 tokensOut = getTokensOut(token, netAvaxAmount);
+        if (tokensOut < minTokensOut) revert SlippageExceeded();
+
+        // Update reserves
+        info.virtualAvax += netAvaxAmount;
+        info.virtualTokens -= tokensOut;
+        info.realAvax += netAvaxAmount;
+        info.realTokens += tokensOut;
+
         // Mint tokens to buyer
-        StartTradeToken(tokenAddress).transfer(msg.sender, tokensToMint);
-        
-        // Refund excess AVAX
-        if (msg.value > avaxNeeded) {
-            (bool success,) = msg.sender.call{value: msg.value - avaxNeeded}("");
+        StartTradeToken(token).mint(msg.sender, tokensOut);
+
+        // Send fees
+        if (platformFee > 0) {
+            (bool success,) = feeRecipient.call{value: platformFee}("");
             if (!success) revert TransferFailed();
         }
         
-        emit TokenPurchased(tokenAddress, msg.sender, avaxNeeded, tokensToMint, tokenInfo.currentPrice);
-        
-        // Check if ready to list on DEX
-        if (tokenInfo.avaxRaised >= LISTING_THRESHOLD && !tokenInfo.isListed) {
-            _listOnDEX(tokenAddress);
+        if (creatorFee > 0) {
+            (bool success,) = info.creator.call{value: creatorFee}("");
+            if (!success) revert TransferFailed();
+        }
+
+        emit TokenPurchased(token, msg.sender, avaxAmount, tokensOut, getCurrentPrice(token));
+
+        // Check if ready to launch
+        if (info.realAvax >= BONDING_CURVE_CAP) {
+            _launchToken(token);
         }
     }
 
-    /**
-     * @dev Sell tokens back to bonding curve
-     */
-    function sellTokens(address tokenAddress, uint256 tokenAmount) external nonReentrant {
-        TokenInfo storage tokenInfo = tokens[tokenAddress];
-        if (tokenInfo.tokenAddress == address(0)) revert TokenNotFound();
-        if (tokenInfo.isListed) revert AlreadyListed();
-        if (tokenAmount == 0) revert InvalidParameters();
+    function sellTokens(address token, uint256 tokenAmount, uint256 minAvaxOut) external nonReentrant {
+        TokenInfo storage info = tokenInfo[token];
+        if (info.creator == address(0)) revert TokenNotFound();
+        if (info.isLaunched) revert TokenAlreadyLaunched();
 
-        // Calculate AVAX to return
-        uint256 avaxToReturn = calculateAVAXForTokens(tokenAddress, tokenAmount);
-        
-        // Apply platform fee
-        uint256 platformFee = (avaxToReturn * PLATFORM_FEE_BPS) / 10000;
-        uint256 userReceives = avaxToReturn - platformFee;
-        
-        // Update token info
-        tokenInfo.currentSupply -= tokenAmount;
-        tokenInfo.avaxRaised -= avaxToReturn;
-        tokenInfo.currentPrice = getCurrentPrice(tokenAddress);
-        
-        // Transfer tokens from user to factory (burn)
-        IERC20(tokenAddress).safeTransferFrom(msg.sender, address(this), tokenAmount);
-        
-        // Transfer AVAX to user
-        (bool success,) = msg.sender.call{value: userReceives}("");
+        if (IERC20(token).balanceOf(msg.sender) < tokenAmount) revert InsufficientTokenBalance();
+
+        // Calculate AVAX to return using bonding curve
+        uint256 avaxOut = getAvaxOut(token, tokenAmount);
+        if (avaxOut < minAvaxOut) revert SlippageExceeded();
+        if (info.realAvax < avaxOut) revert InsufficientAvaxReserves();
+
+        // Update reserves
+        info.virtualAvax -= avaxOut;
+        info.virtualTokens += tokenAmount;
+        info.realAvax -= avaxOut;
+        info.realTokens -= tokenAmount;
+
+        // Burn tokens from seller
+        IERC20(token).safeTransferFrom(msg.sender, address(this), tokenAmount);
+        StartTradeToken(token).burn(tokenAmount);
+
+        // Send AVAX to seller
+        (bool success,) = msg.sender.call{value: avaxOut}("");
         if (!success) revert TransferFailed();
-        
-        // Transfer platform fee
-        if (platformFee > 0) {
-            (bool feeSuccess,) = feeRecipient.call{value: platformFee}("");
-            if (!feeSuccess) revert TransferFailed();
-        }
-        
-        emit TokenSold(tokenAddress, msg.sender, tokenAmount, userReceives, tokenInfo.currentPrice);
+
+        emit TokenSold(token, msg.sender, tokenAmount, avaxOut, getCurrentPrice(token));
     }
 
-    /**
-     * @dev Lists token on DEX when threshold is reached
-     */
-    function _listOnDEX(address tokenAddress) internal {
-        TokenInfo storage tokenInfo = tokens[tokenAddress];
-        BondingCurveParams memory params = bondingCurves[tokenAddress];
+    function _launchToken(address token) internal {
+        TokenInfo storage info = tokenInfo[token];
         
-        // Create pair on DEX
-        address pair = IStartTradeFactory(dexFactory).createPair(tokenAddress, WAVAX);
+        // Create pair
+        address pair = factory.createPair(token, WAVAX);
         
-        // Calculate liquidity amounts
-        uint256 tokenLiquidity = MAX_SUPPLY - tokenInfo.currentSupply; // Remaining tokens
-        uint256 avaxLiquidity = tokenInfo.avaxRaised;
+        // Add liquidity
+        uint256 tokenLiquidity = info.realTokens;
+        uint256 avaxLiquidity = info.realAvax;
         
         // Approve router to spend tokens
-        IERC20(tokenAddress).forceApprove(dexRouter, tokenLiquidity);
+        IERC20(token).forceApprove(address(router), tokenLiquidity);
         
         // Add liquidity to DEX
-        IStartTradeRouter(dexRouter).addLiquidityAVAX{value: avaxLiquidity}(
-            tokenAddress,
+        router.addLiquidityAVAX{value: avaxLiquidity}(
+            token,
             tokenLiquidity,
             tokenLiquidity,
             avaxLiquidity,
-            address(this), // LP tokens go to factory
+            address(0), // Burn LP tokens
             block.timestamp + 300
         );
         
-        tokenInfo.isListed = true;
+        // Mark as launched
+        info.isLaunched = true;
+        isLaunched[token] = true;
         
-        emit TokenListed(tokenAddress, pair, tokenLiquidity);
+        emit TokenLaunched(token, pair, avaxLiquidity, tokenLiquidity);
     }
 
-    /**
-     * @dev Calculate tokens received for given AVAX amount
-     */
-    function calculateTokensForAVAX(address tokenAddress, uint256 avaxAmount) public view returns (uint256) {
-        TokenInfo memory tokenInfo = tokens[tokenAddress];
-        BondingCurveParams memory params = bondingCurves[tokenAddress];
+    // View functions
+    function getTokensOut(address token, uint256 avaxAmount) public view returns (uint256) {
+        TokenInfo memory info = tokenInfo[token];
+        if (info.creator == address(0)) return 0;
         
-        if (tokenInfo.tokenAddress == address(0)) return 0;
+        // Bonding curve: k = virtualAvax * virtualTokens
+        uint256 k = info.virtualAvax * info.virtualTokens;
+        uint256 newVirtualAvax = info.virtualAvax + avaxAmount;
+        uint256 newVirtualTokens = k / newVirtualAvax;
         
-        // Simple linear bonding curve: price increases linearly with supply
-        uint256 currentPrice = params.initialPrice + 
-            ((params.finalPrice - params.initialPrice) * tokenInfo.currentSupply) / params.targetSupply;
-        
-        return avaxAmount / currentPrice;
+        return info.virtualTokens - newVirtualTokens;
     }
 
-    /**
-     * @dev Calculate AVAX needed for given token amount
-     */
-    function calculateAVAXForTokens(address tokenAddress, uint256 tokenAmount) public view returns (uint256) {
-        TokenInfo memory tokenInfo = tokens[tokenAddress];
-        BondingCurveParams memory params = bondingCurves[tokenAddress];
+    function getAvaxOut(address token, uint256 tokenAmount) public view returns (uint256) {
+        TokenInfo memory info = tokenInfo[token];
+        if (info.creator == address(0)) return 0;
         
-        if (tokenInfo.tokenAddress == address(0)) return 0;
+        // Bonding curve: k = virtualAvax * virtualTokens
+        uint256 k = info.virtualAvax * info.virtualTokens;
+        uint256 newVirtualTokens = info.virtualTokens + tokenAmount;
+        uint256 newVirtualAvax = k / newVirtualTokens;
         
-        // Simple linear bonding curve calculation
-        uint256 avgPrice = params.initialPrice + 
-            ((params.finalPrice - params.initialPrice) * (tokenInfo.currentSupply + tokenAmount/2)) / params.targetSupply;
-        
-        return tokenAmount * avgPrice;
+        return info.virtualAvax - newVirtualAvax;
     }
 
-    /**
-     * @dev Get current token price
-     */
-    function getCurrentPrice(address tokenAddress) public view returns (uint256) {
-        TokenInfo memory tokenInfo = tokens[tokenAddress];
-        BondingCurveParams memory params = bondingCurves[tokenAddress];
+    function getCurrentPrice(address token) public view returns (uint256) {
+        TokenInfo memory info = tokenInfo[token];
+        if (info.creator == address(0) || info.virtualTokens == 0) return 0;
         
-        if (tokenInfo.tokenAddress == address(0)) return 0;
-        
-        return params.initialPrice + 
-            ((params.finalPrice - params.initialPrice) * tokenInfo.currentSupply) / params.targetSupply;
+        return (info.virtualAvax * 1e18) / info.virtualTokens;
     }
 
-    /**
-     * @dev Get all tokens created
-     */
-    function getAllTokens() external view returns (address[] memory) {
-        return allTokens;
-    }
-
-    /**
-     * @dev Get token count
-     */
-    function getTokenCount() external view returns (uint256) {
+    function getAllTokensLength() external view returns (uint256) {
         return allTokens.length;
     }
 
-    /**
-     * @dev Update token creation fee (only owner)
-     */
+    // Admin functions
     function setTokenCreationFee(uint256 _fee) external onlyOwner {
         tokenCreationFee = _fee;
     }
 
-    /**
-     * @dev Update fee recipient (only owner)
-     */
     function setFeeRecipient(address _feeRecipient) external onlyOwner {
         feeRecipient = _feeRecipient;
     }
 
-    /**
-     * @dev Emergency withdraw (only owner)
-     */
     function emergencyWithdraw() external onlyOwner {
         (bool success,) = owner().call{value: address(this).balance}("");
         if (!success) revert TransferFailed();
     }
 
-    /**
-     * @dev Receive AVAX
-     */
     receive() external payable {}
 }

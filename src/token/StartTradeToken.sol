@@ -7,127 +7,61 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
  * @title StartTradeToken
- * @dev ERC20 token with permit functionality for gasless approvals
+ * @dev ERC20 token with permit functionality for StartTrade platform
+ * @param name The name of the token
+ * @param symbol The symbol of the token
+ * @param initialSupply The initial supply of tokens to mint
+ * @param owner The owner of the token contract
  */
 contract StartTradeToken is ERC20, ERC20Permit, Ownable {
-    uint8 private _decimals;
-    string private _description;
-    string private _imageUrl;
-    string private _website;
-    string private _telegram;
-    string private _twitter;
-
-    event MetadataUpdated(
-        string description,
-        string imageUrl,
-        string website,
-        string telegram,
-        string twitter
+    string public description;
+    string public imageUrl;
+    address public creator;
+    uint256 public createdAt;
+    
+    event TokenCreated(
+        address indexed token,
+        address indexed creator,
+        string name,
+        string symbol,
+        uint256 initialSupply
     );
 
     constructor(
         string memory name,
         string memory symbol,
-        uint8 decimals_,
-        uint256 totalSupply_,
+        uint256 initialSupply,
         address owner,
-        string memory description_,
-        string memory imageUrl_,
-        string memory website_,
-        string memory telegram_,
-        string memory twitter_
+        string memory _description,
+        string memory _imageUrl
     ) ERC20(name, symbol) ERC20Permit(name) Ownable(owner) {
-        _decimals = decimals_;
-        _description = description_;
-        _imageUrl = imageUrl_;
-        _website = website_;
-        _telegram = telegram_;
-        _twitter = twitter_;
+        creator = owner;
+        description = _description;
+        imageUrl = _imageUrl;
+        createdAt = block.timestamp;
         
-        _mint(owner, totalSupply_);
-    }
-
-    function decimals() public view virtual override returns (uint8) {
-        return _decimals;
-    }
-
-    function description() public view returns (string memory) {
-        return _description;
-    }
-
-    function imageUrl() public view returns (string memory) {
-        return _imageUrl;
-    }
-
-    function website() public view returns (string memory) {
-        return _website;
-    }
-
-    function telegram() public view returns (string memory) {
-        return _telegram;
-    }
-
-    function twitter() public view returns (string memory) {
-        return _twitter;
-    }
-
-    /**
-     * @dev Updates token metadata
-     * @param description_ New description
-     * @param imageUrl_ New image URL
-     * @param website_ New website URL
-     * @param telegram_ New Telegram URL
-     * @param twitter_ New Twitter URL
-     */
-    function updateMetadata(
-        string memory description_,
-        string memory imageUrl_,
-        string memory website_,
-        string memory telegram_,
-        string memory twitter_
-    ) external onlyOwner {
-        _description = description_;
-        _imageUrl = imageUrl_;
-        _website = website_;
-        _telegram = telegram_;
-        _twitter = twitter_;
+        if (initialSupply > 0) {
+            _mint(owner, initialSupply);
+        }
         
-        emit MetadataUpdated(description_, imageUrl_, website_, telegram_, twitter_);
+        emit TokenCreated(address(this), owner, name, symbol, initialSupply);
     }
 
-    /**
-     * @dev Returns token information
-     * @return name Token name
-     * @return symbol Token symbol
-     * @return decimals_ Token decimals
-     * @return totalSupply_ Total supply
-     * @return description_ Token description
-     * @return imageUrl_ Token image URL
-     * @return website_ Website URL
-     * @return telegram_ Telegram URL
-     * @return twitter_ Twitter URL
-     */
-    function getTokenInfo() external view returns (
-        string memory name,
-        string memory symbol,
-        uint8 decimals_,
-        uint256 totalSupply_,
-        string memory description_,
-        string memory imageUrl_,
-        string memory website_,
-        string memory telegram_,
-        string memory twitter_
-    ) {
-        return (
-            name(),
-            symbol(),
-            decimals(),
-            totalSupply(),
-            _description,
-            _imageUrl,
-            _website,
-            _telegram,
-            _twitter
-        );
+    function mint(address to, uint256 amount) external onlyOwner {
+        _mint(to, amount);
+    }
+
+    function burn(uint256 amount) external {
+        _burn(msg.sender, amount);
+    }
+
+    function burnFrom(address account, uint256 amount) external {
+        _spendAllowance(account, msg.sender, amount);
+        _burn(account, amount);
+    }
+
+    function updateMetadata(string memory _description, string memory _imageUrl) external onlyOwner {
+        description = _description;
+        imageUrl = _imageUrl;
     }
 }

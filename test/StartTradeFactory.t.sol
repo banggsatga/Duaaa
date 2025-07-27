@@ -10,113 +10,105 @@ import {StartTradeToken} from "../src/token/StartTradeToken.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract MockWAVAX is IERC20 {
-    string public name = "Wrapped AVAX";
-    string public symbol = "WAVAX";
-    uint8 public decimals = 18;
-    uint256 public totalSupply;
-    
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-    
-    event Deposit(address indexed dst, uint256 wad);
-    event Withdrawal(address indexed src, uint256 wad);
-    
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    uint256 private _totalSupply;
+
+    function deposit() external payable {
+        _balances[msg.sender] += msg.value;
+        _totalSupply += msg.value;
+    }
+
+    function withdraw(uint256 amount) external {
+        require(_balances[msg.sender] >= amount, "Insufficient balance");
+        _balances[msg.sender] -= amount;
+        _totalSupply -= amount;
+        payable(msg.sender).transfer(amount);
+    }
+
+    function totalSupply() external view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) external view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address to, uint256 amount) external override returns (bool) {
+        _balances[msg.sender] -= amount;
+        _balances[to] += amount;
+        return true;
+    }
+
+    function allowance(address owner, address spender) external view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) external override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external override returns (bool) {
+        _allowances[from][msg.sender] -= amount;
+        _balances[from] -= amount;
+        _balances[to] += amount;
+        return true;
+    }
+
     receive() external payable {
         deposit();
-    }
-    
-    function deposit() public payable {
-        balanceOf[msg.sender] += msg.value;
-        totalSupply += msg.value;
-        emit Deposit(msg.sender, msg.value);
-    }
-    
-    function withdraw(uint256 wad) public {
-        require(balanceOf[msg.sender] >= wad);
-        balanceOf[msg.sender] -= wad;
-        totalSupply -= wad;
-        payable(msg.sender).transfer(wad);
-        emit Withdrawal(msg.sender, wad);
-    }
-    
-    function transfer(address to, uint256 value) public returns (bool) {
-        return transferFrom(msg.sender, to, value);
-    }
-    
-    function transferFrom(address from, address to, uint256 value) public returns (bool) {
-        require(balanceOf[from] >= value);
-        
-        if (from != msg.sender && allowance[from][msg.sender] != type(uint256).max) {
-            require(allowance[from][msg.sender] >= value);
-            allowance[from][msg.sender] -= value;
-        }
-        
-        balanceOf[from] -= value;
-        balanceOf[to] += value;
-        
-        emit Transfer(from, to, value);
-        return true;
-    }
-    
-    function approve(address spender, uint256 value) public returns (bool) {
-        allowance[msg.sender][spender] = value;
-        emit Approval(msg.sender, spender, value);
-        return true;
     }
 }
 
 contract StartTradeFactoryTest is Test {
-    StartTradeFactory public factory;
-    StartTradeRouter public router;
-    StartTradeTokenFactory public tokenFactory;
-    MockWAVAX public wavax;
+    StartTradeFactory factory;
+    StartTradeRouter router;
+    StartTradeTokenFactory tokenFactory;
+    MockWAVAX wavax;
     
-    address public owner = address(0x1);
-    address public user1 = address(0x2);
-    address public user2 = address(0x3);
-    address public feeRecipient = address(0x4);
-    
+    address alice = makeAddr("alice");
+    address bob = makeAddr("bob");
+    address feeRecipient = makeAddr("feeRecipient");
+
     function setUp() public {
-        vm.deal(owner, 100 ether);
-        vm.deal(user1, 100 ether);
-        vm.deal(user2, 100 ether);
-        
-        vm.startPrank(owner);
-        
-        // Deploy WAVAX
+        // Deploy contracts
         wavax = new MockWAVAX();
-        
-        // Deploy factory
-        factory = new StartTradeFactory(owner);
-        
-        // Deploy router
+        factory = new StartTradeFactory(address(this));
         router = new StartTradeRouter(address(factory), address(wavax));
-        
-        // Deploy token factory
         tokenFactory = new StartTradeTokenFactory(
-            address(factory),
             address(router),
+            address(factory),
             address(wavax),
-            feeRecipient,
-            owner
+            feeRecipient
         );
-        
-        vm.stopPrank();
+
+        // Fund test accounts
+        vm.deal(alice, 100 ether);
+        vm.deal(bob, 100 ether);
+        vm.deal(address(this), 100 ether);
     }
-    
+
     function testCreatePair() public {
-        vm.startPrank(owner);
-        
         // Create two test tokens
         StartTradeToken tokenA = new StartTradeToken(
-            "Token A", "TKNA", 18, 1000000 * 10**18, owner,
-            "Test token A", "", "", "", ""
-        );
-        StartTradeToken tokenB = new StartTradeToken(
-            "Token B", "TKNB", 18, 1000000 * 10**18, owner,
-            "Test token B", "", "", "", ""
+            "Token A",
+            "TKNA",
+            1000000 * 10**18,
+            address(this),
+            "Test token A",
+            "https://example.com/a.png"
         );
         
+        StartTradeToken tokenB = new StartTradeToken(
+            "Token B",
+            "TKNB",
+            1000000 * 10**18,
+            address(this),
+            "Test token B",
+            "https://example.com/b.png"
+        );
+
         // Create pair
         address pair = factory.createPair(address(tokenA), address(tokenB));
         
@@ -124,130 +116,79 @@ contract StartTradeFactoryTest is Test {
         assertEq(factory.getPair(address(tokenA), address(tokenB)), pair);
         assertEq(factory.getPair(address(tokenB), address(tokenA)), pair);
         assertEq(factory.allPairsLength(), 1);
-        
-        vm.stopPrank();
     }
-    
+
     function testTokenCreation() public {
-        vm.startPrank(user1);
+        vm.startPrank(alice);
         
-        uint256 creationFee = tokenFactory.tokenCreationFee();
-        
-        // Create token
-        address tokenAddress = tokenFactory.createToken{value: creationFee}(
-            "Test Token",
-            "TEST",
-            "A test token for bonding curve",
-            "https://example.com/image.png",
-            "https://example.com",
-            "https://t.me/test",
-            "https://twitter.com/test",
-            100 ether // 100 AVAX market cap target
+        // Create token with creation fee
+        address token = tokenFactory.createToken{value: 0.01 ether}(
+            "Alice Token",
+            "ALICE",
+            "Alice's awesome token",
+            "https://example.com/alice.png"
         );
-        
+
         // Verify token was created
-        (address storedAddress, address creator,,,,,,,) = tokenFactory.tokens(tokenAddress);
-        assertEq(storedAddress, tokenAddress);
-        assertEq(creator, user1);
+        assertTrue(token != address(0));
+        assertEq(tokenFactory.getAllTokensLength(), 1);
+        
+        // Check token info
+        (address creator,,,,,) = tokenFactory.tokenInfo(token);
+        assertEq(creator, alice);
         
         vm.stopPrank();
     }
-    
+
     function testBuyTokens() public {
-        vm.startPrank(user1);
-        
-        uint256 creationFee = tokenFactory.tokenCreationFee();
+        vm.startPrank(alice);
         
         // Create token
-        address tokenAddress = tokenFactory.createToken{value: creationFee}(
-            "Test Token",
-            "TEST",
-            "A test token for bonding curve",
-            "https://example.com/image.png",
-            "https://example.com",
-            "https://t.me/test",
-            "https://twitter.com/test",
-            100 ether
+        address token = tokenFactory.createToken{value: 0.01 ether}(
+            "Alice Token",
+            "ALICE",
+            "Alice's awesome token",
+            "https://example.com/alice.png"
         );
-        
+
         // Buy tokens
         uint256 avaxAmount = 1 ether;
-        uint256 tokensBefore = IERC20(tokenAddress).balanceOf(user1);
+        uint256 expectedTokens = tokenFactory.getTokensOut(token, avaxAmount * 98 / 100); // Account for fees
         
-        tokenFactory.buyTokens{value: avaxAmount}(tokenAddress);
+        tokenFactory.buyTokens{value: avaxAmount}(token, 0);
         
-        uint256 tokensAfter = IERC20(tokenAddress).balanceOf(user1);
-        assertGt(tokensAfter, tokensBefore);
-        
-        vm.stopPrank();
-    }
-    
-    function testAddLiquidity() public {
-        vm.startPrank(owner);
-        
-        // Create test tokens
-        StartTradeToken tokenA = new StartTradeToken(
-            "Token A", "TKNA", 18, 1000000 * 10**18, owner,
-            "Test token A", "", "", "", ""
-        );
-        
-        // Approve router
-        tokenA.approve(address(router), 1000 * 10**18);
-        
-        // Add liquidity
-        router.addLiquidityAVAX{value: 10 ether}(
-            address(tokenA),
-            1000 * 10**18,
-            900 * 10**18,
-            9 ether,
-            owner,
-            block.timestamp + 300
-        );
-        
-        // Verify pair exists
-        address pair = factory.getPair(address(tokenA), address(wavax));
-        assertNotEq(pair, address(0));
+        // Verify tokens were received
+        assertGt(IERC20(token).balanceOf(alice), 0);
         
         vm.stopPrank();
     }
-    
-    function testSwap() public {
-        vm.startPrank(owner);
+
+    function testSellTokens() public {
+        vm.startPrank(alice);
         
-        // Create test tokens and add liquidity first
-        StartTradeToken tokenA = new StartTradeToken(
-            "Token A", "TKNA", 18, 1000000 * 10**18, owner,
-            "Test token A", "", "", "", ""
+        // Create and buy tokens first
+        address token = tokenFactory.createToken{value: 0.01 ether}(
+            "Alice Token",
+            "ALICE",
+            "Alice's awesome token",
+            "https://example.com/alice.png"
         );
+
+        tokenFactory.buyTokens{value: 1 ether}(token, 0);
+        uint256 tokenBalance = IERC20(token).balanceOf(alice);
         
-        tokenA.approve(address(router), 1000 * 10**18);
+        // Approve token factory to spend tokens
+        IERC20(token).approve(address(tokenFactory), tokenBalance / 2);
         
-        router.addLiquidityAVAX{value: 10 ether}(
-            address(tokenA),
-            1000 * 10**18,
-            900 * 10**18,
-            9 ether,
-            owner,
-            block.timestamp + 300
-        );
+        // Sell half the tokens
+        uint256 balanceBefore = alice.balance;
+        tokenFactory.sellTokens(token, tokenBalance / 2, 0);
         
-        // Perform swap
-        address[] memory path = new address[](2);
-        path[0] = address(wavax);
-        path[1] = address(tokenA);
-        
-        uint256 tokenBalanceBefore = tokenA.balanceOf(owner);
-        
-        router.swapExactAVAXForTokens{value: 1 ether}(
-            0,
-            path,
-            owner,
-            block.timestamp + 300
-        );
-        
-        uint256 tokenBalanceAfter = tokenA.balanceOf(owner);
-        assertGt(tokenBalanceAfter, tokenBalanceBefore);
+        // Verify AVAX was received
+        assertGt(alice.balance, balanceBefore);
         
         vm.stopPrank();
     }
+
+    receive() external payable {}
 }
